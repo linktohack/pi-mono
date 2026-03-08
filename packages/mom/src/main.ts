@@ -5,6 +5,7 @@ import { type AgentRunner, getOrCreateRunner, type Platform } from "./agent.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
+import { RocketChatBot } from "./rocketchat.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
 import { SlackBot as SlackBotClass } from "./slack.js";
 import { ChannelStore } from "./store.js";
@@ -18,9 +19,20 @@ import type { ChatBot, ChatEvent, MomHandler } from "./types.js";
 const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
 const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
+const MOM_RC_URL = process.env.MOM_RC_URL;
+const MOM_RC_USER = process.env.MOM_RC_USER;
+const MOM_RC_PASSWORD = process.env.MOM_RC_PASSWORD;
+const MOM_RC_AUTH_TOKEN = process.env.MOM_RC_AUTH_TOKEN;
+const MOM_RC_USER_ID = process.env.MOM_RC_USER_ID;
 
 // Platform detection
-const platform: Platform = MOM_TELEGRAM_BOT_TOKEN ? "telegram" : MOM_SLACK_APP_TOKEN ? "slack" : "slack"; // default
+const platform: Platform = MOM_RC_URL
+	? "rocketchat"
+	: MOM_TELEGRAM_BOT_TOKEN
+		? "telegram"
+		: MOM_SLACK_APP_TOKEN
+			? "slack"
+			: "slack";
 
 interface ParsedArgs {
 	workingDir?: string;
@@ -84,6 +96,16 @@ if (platform === "slack" && (!MOM_SLACK_APP_TOKEN || !MOM_SLACK_BOT_TOKEN)) {
 if (platform === "telegram" && !MOM_TELEGRAM_BOT_TOKEN) {
 	console.error("Missing env: MOM_TELEGRAM_BOT_TOKEN");
 	process.exit(1);
+}
+if (platform === "rocketchat") {
+	const hasToken = MOM_RC_AUTH_TOKEN && MOM_RC_USER_ID;
+	const hasLogin = MOM_RC_USER && MOM_RC_PASSWORD;
+	if (!MOM_RC_URL || (!hasToken && !hasLogin)) {
+		console.error(
+			"Missing env: MOM_RC_URL + (MOM_RC_AUTH_TOKEN & MOM_RC_USER_ID) or (MOM_RC_USER & MOM_RC_PASSWORD)",
+		);
+		process.exit(1);
+	}
 }
 
 await validateSandbox(sandbox);
@@ -351,7 +373,17 @@ const sharedStore = new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN
 
 let chatBot: ChatBot;
 
-if (platform === "telegram") {
+if (platform === "rocketchat") {
+	chatBot = new RocketChatBot(handler, {
+		url: MOM_RC_URL!,
+		username: MOM_RC_USER,
+		password: MOM_RC_PASSWORD,
+		authToken: MOM_RC_AUTH_TOKEN,
+		userId: MOM_RC_USER_ID,
+		workingDir,
+		store: sharedStore,
+	});
+} else if (platform === "telegram") {
 	chatBot = new TelegramBot(handler, {
 		token: MOM_TELEGRAM_BOT_TOKEN!,
 		workingDir,

@@ -52,6 +52,10 @@ export class ChannelStore {
 		}
 	}
 
+	setDownloadHeaders(headers: Record<string, string>): void {
+		this.downloadHeaders = headers;
+	}
+
 	/**
 	 * Get or create the directory for a channel/DM
 	 */

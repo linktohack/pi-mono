@@ -138,7 +138,7 @@ function loadMomSkills(channelDir: string, workspacePath: string): Skill[] {
 	return Array.from(skillMap.values());
 }
 
-export type Platform = "slack" | "telegram";
+export type Platform = "slack" | "telegram" | "rocketchat";
 
 function buildSystemPrompt(
 	workspacePath: string,
@@ -170,13 +170,17 @@ function buildSystemPrompt(
 - Bash working directory: ${process.cwd()}
 - Be careful with system modifications`;
 
-	const platformName = platform === "telegram" ? "Telegram" : "Slack";
+	const platformName = platform === "telegram" ? "Telegram" : platform === "rocketchat" ? "Rocket.Chat" : "Slack";
 	const formattingSection =
 		platform === "telegram"
 			? `## Telegram Formatting (mrkdwn)
 Bold: *text*, Italic: _text_, Code: \`code\`, Block: \`\`\`code\`\`\`
 Keep messages concise — Telegram has a 4096 character limit per message.`
-			: `## Slack Formatting (mrkdwn, NOT Markdown)
+			: platform === "rocketchat"
+				? `## Rocket.Chat Formatting (Markdown)
+Bold: *text* or **text**, Italic: _text_, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: [text](url)
+Standard Markdown formatting is supported.`
+				: `## Slack Formatting (mrkdwn, NOT Markdown)
 Bold: *text*, Italic: _text_, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: <url|text>
 Do NOT use **double asterisks** or [markdown](links).`;
 
