@@ -25,19 +25,11 @@ const MOM_RC_PASSWORD = process.env.MOM_RC_PASSWORD;
 const MOM_RC_AUTH_TOKEN = process.env.MOM_RC_AUTH_TOKEN;
 const MOM_RC_USER_ID = process.env.MOM_RC_USER_ID;
 
-// Platform detection
-const platform: Platform = MOM_RC_URL
-	? "rocketchat"
-	: MOM_TELEGRAM_BOT_TOKEN
-		? "telegram"
-		: MOM_SLACK_APP_TOKEN
-			? "slack"
-			: "slack";
-
 interface ParsedArgs {
 	workingDir?: string;
 	sandbox: SandboxConfig;
 	downloadChannel?: string;
+	platform?: Platform;
 }
 
 function parseArgs(): ParsedArgs {
@@ -45,6 +37,7 @@ function parseArgs(): ParsedArgs {
 	let sandbox: SandboxConfig = { type: "host" };
 	let workingDir: string | undefined;
 	let downloadChannelId: string | undefined;
+	let explicitPlatform: Platform | undefined;
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
@@ -56,6 +49,10 @@ function parseArgs(): ParsedArgs {
 			downloadChannelId = arg.slice("--download=".length);
 		} else if (arg === "--download") {
 			downloadChannelId = args[++i];
+		} else if (arg.startsWith("--platform=")) {
+			explicitPlatform = arg.slice("--platform=".length) as Platform;
+		} else if (arg === "--platform") {
+			explicitPlatform = args[++i] as Platform;
 		} else if (!arg.startsWith("-")) {
 			workingDir = arg;
 		}
@@ -65,10 +62,26 @@ function parseArgs(): ParsedArgs {
 		workingDir: workingDir ? resolve(workingDir) : undefined,
 		sandbox,
 		downloadChannel: downloadChannelId,
+		platform: explicitPlatform,
 	};
 }
 
+// Platform detection: explicit flag > env var auto-detect
+function detectPlatform(explicit?: Platform): Platform {
+	if (explicit) {
+		if (!["slack", "telegram", "rocketchat"].includes(explicit)) {
+			console.error(`Unknown platform: ${explicit}. Use: slack, telegram, rocketchat`);
+			process.exit(1);
+		}
+		return explicit;
+	}
+	if (MOM_RC_URL) return "rocketchat";
+	if (MOM_TELEGRAM_BOT_TOKEN) return "telegram";
+	return "slack";
+}
+
 const parsedArgs = parseArgs();
+const platform = detectPlatform(parsedArgs.platform);
 
 // Handle --download mode
 if (parsedArgs.downloadChannel) {
@@ -82,7 +95,9 @@ if (parsedArgs.downloadChannel) {
 
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
-	console.error("Usage: mom [--sandbox=host|docker:<name>] <working-directory>");
+	console.error(
+		"Usage: mom [--platform=slack|telegram|rocketchat] [--sandbox=host|docker:<name>] <working-directory>",
+	);
 	console.error("       mom --download <channel-id>");
 	process.exit(1);
 }
