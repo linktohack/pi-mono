@@ -36,13 +36,13 @@ interface LogMessage {
  *
  * @param sessionManager - The SessionManager to sync to
  * @param channelDir - Path to channel directory containing log.jsonl
- * @param excludeSlackTs - Slack timestamp of current message (will be added via prompt(), not sync)
+ * @param excludeMessageId - Message ID of current message (will be added via prompt(), not sync)
  * @returns Number of messages synced
  */
 export function syncLogToSessionManager(
 	sessionManager: SessionManager,
 	channelDir: string,
-	excludeSlackTs?: string,
+	excludeMessageId?: string,
 ): number {
 	const logFile = join(channelDir, "log.jsonl");
 
@@ -104,7 +104,7 @@ export function syncLogToSessionManager(
 			if (!slackTs || !date) continue;
 
 			// Skip the current message being processed (will be added via prompt())
-			if (excludeSlackTs && slackTs === excludeSlackTs) continue;
+			if (excludeMessageId && slackTs === excludeMessageId) continue;
 
 			// Skip bot messages - added through agent flow
 			if (logMsg.isBot) continue;

@@ -21,7 +21,8 @@ export interface LoggedMessage {
 
 export interface ChannelStoreConfig {
 	workingDir: string;
-	botToken: string; // needed for authenticated file downloads
+	botToken?: string; // needed for authenticated file downloads (Slack)
+	downloadHeaders?: Record<string, string>; // custom headers for file downloads (non-Slack platforms)
 }
 
 interface PendingDownload {
@@ -32,7 +33,8 @@ interface PendingDownload {
 
 export class ChannelStore {
 	private workingDir: string;
-	private botToken: string;
+	private botToken?: string;
+	private downloadHeaders?: Record<string, string>;
 	private pendingDownloads: PendingDownload[] = [];
 	private isDownloading = false;
 	// Track recently logged message timestamps to prevent duplicates
@@ -42,6 +44,7 @@ export class ChannelStore {
 	constructor(config: ChannelStoreConfig) {
 		this.workingDir = config.workingDir;
 		this.botToken = config.botToken;
+		this.downloadHeaders = config.downloadHeaders;
 
 		// Ensure working directory exists
 		if (!existsSync(this.workingDir)) {
@@ -64,8 +67,16 @@ export class ChannelStore {
 	 * Generate a unique local filename for an attachment
 	 */
 	generateLocalFilename(originalName: string, timestamp: string): string {
-		// Convert slack timestamp (1234567890.123456) to milliseconds
-		const ts = Math.floor(parseFloat(timestamp) * 1000);
+		// Convert timestamp to milliseconds
+		let ts: number;
+		if (timestamp.includes(".")) {
+			// Slack timestamp format (1234567890.123456)
+			ts = Math.floor(parseFloat(timestamp) * 1000);
+		} else {
+			// Already milliseconds or plain integer (Telegram message_id, epoch ms)
+			const parsed = parseInt(timestamp, 10);
+			ts = parsed > 1e12 ? parsed : Date.now(); // Use current time if not epoch ms
+		}
 		// Sanitize original name (remove problematic characters)
 		const sanitized = originalName.replace(/[^a-zA-Z0-9._-]/g, "_");
 		return `${ts}_${sanitized}`;
@@ -218,11 +229,15 @@ export class ChannelStore {
 			mkdirSync(dir, { recursive: true });
 		}
 
-		const response = await fetch(url, {
-			headers: {
-				Authorization: `Bearer ${this.botToken}`,
-			},
-		});
+		const headers: Record<string, string> = {};
+		if (this.botToken) {
+			headers.Authorization = `Bearer ${this.botToken}`;
+		}
+		if (this.downloadHeaders) {
+			Object.assign(headers, this.downloadHeaders);
+		}
+
+		const response = await fetch(url, { headers });
 
 		if (!response.ok) {
 			throw new Error(`HTTP ${response.status}: ${response.statusText}`);

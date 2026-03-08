@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
-import { type AgentRunner, getOrCreateRunner } from "./agent.js";
+import { type AgentRunner, getOrCreateRunner, type Platform } from "./agent.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
 import { parseSandboxArg, type SandboxConfig, validateSandbox } from "./sandbox.js";
-import { type MomHandler, type SlackBot, SlackBot as SlackBotClass, type SlackEvent } from "./slack.js";
+import { SlackBot as SlackBotClass } from "./slack.js";
 import { ChannelStore } from "./store.js";
+import { TelegramBot } from "./telegram.js";
+import type { ChatBot, ChatEvent, MomHandler } from "./types.js";
 
 // ============================================================================
 // Config
@@ -15,6 +17,10 @@ import { ChannelStore } from "./store.js";
 
 const MOM_SLACK_APP_TOKEN = process.env.MOM_SLACK_APP_TOKEN;
 const MOM_SLACK_BOT_TOKEN = process.env.MOM_SLACK_BOT_TOKEN;
+const MOM_TELEGRAM_BOT_TOKEN = process.env.MOM_TELEGRAM_BOT_TOKEN;
+
+// Platform detection
+const platform: Platform = MOM_TELEGRAM_BOT_TOKEN ? "telegram" : MOM_SLACK_APP_TOKEN ? "slack" : "slack"; // default
 
 interface ParsedArgs {
 	workingDir?: string;
@@ -71,8 +77,12 @@ if (!parsedArgs.workingDir) {
 
 const { workingDir, sandbox } = { workingDir: parsedArgs.workingDir, sandbox: parsedArgs.sandbox };
 
-if (!MOM_SLACK_APP_TOKEN || !MOM_SLACK_BOT_TOKEN) {
+if (platform === "slack" && (!MOM_SLACK_APP_TOKEN || !MOM_SLACK_BOT_TOKEN)) {
 	console.error("Missing env: MOM_SLACK_APP_TOKEN, MOM_SLACK_BOT_TOKEN");
+	process.exit(1);
+}
+if (platform === "telegram" && !MOM_TELEGRAM_BOT_TOKEN) {
+	console.error("Missing env: MOM_TELEGRAM_BOT_TOKEN");
 	process.exit(1);
 }
 
@@ -98,8 +108,8 @@ function getState(channelId: string): ChannelState {
 		const channelDir = join(workingDir, channelId);
 		state = {
 			running: false,
-			runner: getOrCreateRunner(sandbox, channelId, channelDir),
-			store: new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! }),
+			runner: getOrCreateRunner(sandbox, channelId, channelDir, platform),
+			store: new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN }),
 			stopRequested: false,
 		};
 		channelStates.set(channelId, state);
@@ -108,10 +118,10 @@ function getState(channelId: string): ChannelState {
 }
 
 // ============================================================================
-// Create SlackContext adapter
+// Create ChatContext adapter
 // ============================================================================
 
-function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelState, isEvent?: boolean) {
+function createChatContext(event: ChatEvent, bot: ChatBot, state: ChannelState, isEvent?: boolean) {
 	let messageTs: string | null = null;
 	const threadMessageTs: string[] = [];
 	let accumulatedText = "";
@@ -119,10 +129,13 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 	const workingIndicator = " ...";
 	let updatePromise = Promise.resolve();
 
-	const user = slack.getUser(event.user);
+	const user = bot.getUser(event.user);
 
 	// Extract event filename for status message
 	const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
+
+	// Truncation limit (Telegram: 4K, Slack: 40K)
+	const MAX_MAIN_LENGTH = platform === "telegram" ? 3500 : 35000;
 
 	return {
 		message: {
@@ -131,21 +144,19 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 			user: event.user,
 			userName: user?.userName,
 			channel: event.channel,
-			ts: event.ts,
+			messageId: event.messageId,
 			attachments: (event.attachments || []).map((a) => ({ local: a.local })),
 		},
-		channelName: slack.getChannel(event.channel)?.name,
+		channelName: bot.getChannel(event.channel)?.name,
 		store: state.store,
-		channels: slack.getAllChannels().map((c) => ({ id: c.id, name: c.name })),
-		users: slack.getAllUsers().map((u) => ({ id: u.id, userName: u.userName, displayName: u.displayName })),
+		channels: bot.getAllChannels().map((c) => ({ id: c.id, name: c.name })),
+		users: bot.getAllUsers().map((u) => ({ id: u.id, userName: u.userName, displayName: u.displayName })),
 
 		respond: async (text: string, shouldLog = true) => {
 			updatePromise = updatePromise.then(async () => {
 				try {
 					accumulatedText = accumulatedText ? `${accumulatedText}\n${text}` : text;
 
-					// Truncate accumulated text if too long (Slack limit is 40K, we use 35K for safety)
-					const MAX_MAIN_LENGTH = 35000;
 					const truncationNote = "\n\n_(message truncated, ask me to elaborate on specific parts)_";
 					if (accumulatedText.length > MAX_MAIN_LENGTH) {
 						accumulatedText =
@@ -155,16 +166,16 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 					const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
 
 					if (messageTs) {
-						await slack.updateMessage(event.channel, messageTs, displayText);
+						await bot.updateMessage(event.channel, messageTs, displayText);
 					} else {
-						messageTs = await slack.postMessage(event.channel, displayText);
+						messageTs = await bot.postMessage(event.channel, displayText);
 					}
 
 					if (shouldLog && messageTs) {
-						slack.logBotResponse(event.channel, text, messageTs);
+						bot.logBotResponse(event.channel, text, messageTs);
 					}
 				} catch (err) {
-					log.logWarning("Slack respond error", err instanceof Error ? err.message : String(err));
+					log.logWarning("Chat respond error", err instanceof Error ? err.message : String(err));
 				}
 			});
 			await updatePromise;
@@ -173,8 +184,6 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 		replaceMessage: async (text: string) => {
 			updatePromise = updatePromise.then(async () => {
 				try {
-					// Replace the accumulated text entirely, with truncation
-					const MAX_MAIN_LENGTH = 35000;
 					const truncationNote = "\n\n_(message truncated, ask me to elaborate on specific parts)_";
 					if (text.length > MAX_MAIN_LENGTH) {
 						accumulatedText = text.substring(0, MAX_MAIN_LENGTH - truncationNote.length) + truncationNote;
@@ -185,12 +194,12 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 					const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
 
 					if (messageTs) {
-						await slack.updateMessage(event.channel, messageTs, displayText);
+						await bot.updateMessage(event.channel, messageTs, displayText);
 					} else {
-						messageTs = await slack.postMessage(event.channel, displayText);
+						messageTs = await bot.postMessage(event.channel, displayText);
 					}
 				} catch (err) {
-					log.logWarning("Slack replaceMessage error", err instanceof Error ? err.message : String(err));
+					log.logWarning("Chat replaceMessage error", err instanceof Error ? err.message : String(err));
 				}
 			});
 			await updatePromise;
@@ -200,18 +209,17 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 			updatePromise = updatePromise.then(async () => {
 				try {
 					if (messageTs) {
-						// Truncate thread messages if too long (20K limit for safety)
 						const MAX_THREAD_LENGTH = 20000;
 						let threadText = text;
 						if (threadText.length > MAX_THREAD_LENGTH) {
 							threadText = `${threadText.substring(0, MAX_THREAD_LENGTH - 50)}\n\n_(truncated)_`;
 						}
 
-						const ts = await slack.postInThread(event.channel, messageTs, threadText);
+						const ts = await bot.postInThread(event.channel, messageTs, threadText);
 						threadMessageTs.push(ts);
 					}
 				} catch (err) {
-					log.logWarning("Slack respondInThread error", err instanceof Error ? err.message : String(err));
+					log.logWarning("Chat respondInThread error", err instanceof Error ? err.message : String(err));
 				}
 			});
 			await updatePromise;
@@ -223,10 +231,10 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 					try {
 						if (!messageTs) {
 							accumulatedText = eventFilename ? `_Starting event: ${eventFilename}_` : "_Thinking_";
-							messageTs = await slack.postMessage(event.channel, accumulatedText + workingIndicator);
+							messageTs = await bot.postMessage(event.channel, accumulatedText + workingIndicator);
 						}
 					} catch (err) {
-						log.logWarning("Slack setTyping error", err instanceof Error ? err.message : String(err));
+						log.logWarning("Chat setTyping error", err instanceof Error ? err.message : String(err));
 					}
 				});
 				await updatePromise;
@@ -234,7 +242,7 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 		},
 
 		uploadFile: async (filePath: string, title?: string) => {
-			await slack.uploadFile(event.channel, filePath, title);
+			await bot.uploadFile(event.channel, filePath, title);
 		},
 
 		setWorking: async (working: boolean) => {
@@ -243,10 +251,10 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 					isWorking = working;
 					if (messageTs) {
 						const displayText = isWorking ? accumulatedText + workingIndicator : accumulatedText;
-						await slack.updateMessage(event.channel, messageTs, displayText);
+						await bot.updateMessage(event.channel, messageTs, displayText);
 					}
 				} catch (err) {
-					log.logWarning("Slack setWorking error", err instanceof Error ? err.message : String(err));
+					log.logWarning("Chat setWorking error", err instanceof Error ? err.message : String(err));
 				}
 			});
 			await updatePromise;
@@ -257,7 +265,7 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 				// Delete thread messages first (in reverse order)
 				for (let i = threadMessageTs.length - 1; i >= 0; i--) {
 					try {
-						await slack.deleteMessage(event.channel, threadMessageTs[i]);
+						await bot.deleteMessage(event.channel, threadMessageTs[i]);
 					} catch {
 						// Ignore errors deleting thread messages
 					}
@@ -265,7 +273,7 @@ function createSlackContext(event: SlackEvent, slack: SlackBot, state: ChannelSt
 				threadMessageTs.length = 0;
 				// Then delete main message
 				if (messageTs) {
-					await slack.deleteMessage(event.channel, messageTs);
+					await bot.deleteMessage(event.channel, messageTs);
 					messageTs = null;
 				}
 			});
@@ -284,19 +292,19 @@ const handler: MomHandler = {
 		return state?.running ?? false;
 	},
 
-	async handleStop(channelId: string, slack: SlackBot): Promise<void> {
+	async handleStop(channelId: string, bot: ChatBot): Promise<void> {
 		const state = channelStates.get(channelId);
 		if (state?.running) {
 			state.stopRequested = true;
 			state.runner.abort();
-			const ts = await slack.postMessage(channelId, "_Stopping..._");
+			const ts = await bot.postMessage(channelId, "_Stopping..._");
 			state.stopMessageTs = ts; // Save for updating later
 		} else {
-			await slack.postMessage(channelId, "_Nothing running_");
+			await bot.postMessage(channelId, "_Nothing running_");
 		}
 	},
 
-	async handleEvent(event: SlackEvent, slack: SlackBot, isEvent?: boolean): Promise<void> {
+	async handleEvent(event: ChatEvent, bot: ChatBot, isEvent?: boolean): Promise<void> {
 		const state = getState(event.channel);
 
 		// Start run
@@ -307,20 +315,20 @@ const handler: MomHandler = {
 
 		try {
 			// Create context adapter
-			const ctx = createSlackContext(event, slack, state, isEvent);
+			const ctx = createChatContext(event, bot, state, isEvent);
 
 			// Run the agent
 			await ctx.setTyping(true);
 			await ctx.setWorking(true);
-			const result = await state.runner.run(ctx as any, state.store);
+			const result = await state.runner.run(ctx, state.store);
 			await ctx.setWorking(false);
 
 			if (result.stopReason === "aborted" && state.stopRequested) {
 				if (state.stopMessageTs) {
-					await slack.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
+					await bot.updateMessage(event.channel, state.stopMessageTs, "_Stopped_");
 					state.stopMessageTs = undefined;
 				} else {
-					await slack.postMessage(event.channel, "_Stopped_");
+					await bot.postMessage(event.channel, "_Stopped_");
 				}
 			}
 		} catch (err) {
@@ -336,19 +344,30 @@ const handler: MomHandler = {
 // ============================================================================
 
 log.logStartup(workingDir, sandbox.type === "host" ? "host" : `docker:${sandbox.container}`);
+log.logInfo(`Platform: ${platform}`);
 
 // Shared store for attachment downloads (also used per-channel in getState)
-const sharedStore = new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN! });
+const sharedStore = new ChannelStore({ workingDir, botToken: MOM_SLACK_BOT_TOKEN });
 
-const bot = new SlackBotClass(handler, {
-	appToken: MOM_SLACK_APP_TOKEN,
-	botToken: MOM_SLACK_BOT_TOKEN,
-	workingDir,
-	store: sharedStore,
-});
+let chatBot: ChatBot;
+
+if (platform === "telegram") {
+	chatBot = new TelegramBot(handler, {
+		token: MOM_TELEGRAM_BOT_TOKEN!,
+		workingDir,
+		store: sharedStore,
+	});
+} else {
+	chatBot = new SlackBotClass(handler, {
+		appToken: MOM_SLACK_APP_TOKEN!,
+		botToken: MOM_SLACK_BOT_TOKEN!,
+		workingDir,
+		store: sharedStore,
+	});
+}
 
 // Start events watcher
-const eventsWatcher = createEventsWatcher(workingDir, bot);
+const eventsWatcher = createEventsWatcher(workingDir, chatBot);
 eventsWatcher.start();
 
 // Handle shutdown
@@ -364,4 +383,4 @@ process.on("SIGTERM", () => {
 	process.exit(0);
 });
 
-bot.start();
+chatBot.start();

@@ -19,9 +19,9 @@ import { join } from "path";
 import { createMomSettingsManager, syncLogToSessionManager } from "./context.js";
 import * as log from "./log.js";
 import { createExecutor, type SandboxConfig } from "./sandbox.js";
-import type { ChannelInfo, SlackContext, UserInfo } from "./slack.js";
 import type { ChannelStore } from "./store.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
+import type { ChannelInfo, ChatContext, UserInfo } from "./types.js";
 
 // Hardcoded model for now - TODO: make configurable (issue #63)
 const model = getModel("anthropic", "claude-sonnet-4-5");
@@ -35,7 +35,7 @@ export interface PendingMessage {
 
 export interface AgentRunner {
 	run(
-		ctx: SlackContext,
+		ctx: ChatContext,
 		store: ChannelStore,
 		pendingMessages?: PendingMessage[],
 	): Promise<{ stopReason: string; errorMessage?: string }>;
@@ -138,6 +138,8 @@ function loadMomSkills(channelDir: string, workspacePath: string): Skill[] {
 	return Array.from(skillMap.values());
 }
 
+export type Platform = "slack" | "telegram";
+
 function buildSystemPrompt(
 	workspacePath: string,
 	channelId: string,
@@ -146,6 +148,7 @@ function buildSystemPrompt(
 	channels: ChannelInfo[],
 	users: UserInfo[],
 	skills: Skill[],
+	platform: Platform = "slack",
 ): string {
 	const channelPath = `${workspacePath}/${channelId}`;
 	const isDocker = sandboxConfig.type === "docker";
@@ -167,23 +170,39 @@ function buildSystemPrompt(
 - Bash working directory: ${process.cwd()}
 - Be careful with system modifications`;
 
-	return `You are mom, a Slack bot assistant. Be concise. No emojis.
+	const platformName = platform === "telegram" ? "Telegram" : "Slack";
+	const formattingSection =
+		platform === "telegram"
+			? `## Telegram Formatting (mrkdwn)
+Bold: *text*, Italic: _text_, Code: \`code\`, Block: \`\`\`code\`\`\`
+Keep messages concise — Telegram has a 4096 character limit per message.`
+			: `## Slack Formatting (mrkdwn, NOT Markdown)
+Bold: *text*, Italic: _text_, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: <url|text>
+Do NOT use **double asterisks** or [markdown](links).`;
+
+	const idSection =
+		platform === "telegram"
+			? `## Chat IDs
+Chats: ${channelMappings}
+
+Users: ${userMappings}`
+			: `## Slack IDs
+Channels: ${channelMappings}
+
+Users: ${userMappings}
+
+When mentioning users, use <@username> format (e.g., <@mario>).`;
+
+	return `You are mom, a ${platformName} bot assistant. Be concise. No emojis.
 
 ## Context
 - For current date/time, use: date
 - You have access to previous conversation context including tool results from prior turns.
 - For older history beyond your context, search log.jsonl (contains user messages and your final responses, but not tool results).
 
-## Slack Formatting (mrkdwn, NOT Markdown)
-Bold: *text*, Italic: _text_, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: <url|text>
-Do NOT use **double asterisks** or [markdown](links).
+${formattingSection}
 
-## Slack IDs
-Channels: ${channelMappings}
-
-Users: ${userMappings}
-
-When mentioning users, use <@username> format (e.g., <@mario>).
+${idSection}
 
 ## Environment
 ${envDescription}
@@ -395,11 +414,16 @@ const channelRunners = new Map<string, AgentRunner>();
  * Get or create an AgentRunner for a channel.
  * Runners are cached - one per channel, persistent across messages.
  */
-export function getOrCreateRunner(sandboxConfig: SandboxConfig, channelId: string, channelDir: string): AgentRunner {
+export function getOrCreateRunner(
+	sandboxConfig: SandboxConfig,
+	channelId: string,
+	channelDir: string,
+	platform: Platform = "slack",
+): AgentRunner {
 	const existing = channelRunners.get(channelId);
 	if (existing) return existing;
 
-	const runner = createRunner(sandboxConfig, channelId, channelDir);
+	const runner = createRunner(sandboxConfig, channelId, channelDir, platform);
 	channelRunners.set(channelId, runner);
 	return runner;
 }
@@ -408,7 +432,12 @@ export function getOrCreateRunner(sandboxConfig: SandboxConfig, channelId: strin
  * Create a new AgentRunner for a channel.
  * Sets up the session and subscribes to events once.
  */
-function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDir: string): AgentRunner {
+function createRunner(
+	sandboxConfig: SandboxConfig,
+	channelId: string,
+	channelDir: string,
+	platform: Platform = "slack",
+): AgentRunner {
 	const executor = createExecutor(sandboxConfig);
 	const workspacePath = executor.getWorkspacePath(channelDir.replace(`/${channelId}`, ""));
 
@@ -418,7 +447,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 	// Initial system prompt (will be updated each run with fresh memory/channels/users/skills)
 	const memory = getMemory(channelDir);
 	const skills = loadMomSkills(channelDir, workspacePath);
-	const systemPrompt = buildSystemPrompt(workspacePath, channelId, memory, sandboxConfig, [], [], skills);
+	const systemPrompt = buildSystemPrompt(workspacePath, channelId, memory, sandboxConfig, [], [], skills, platform);
 
 	// Create session manager and settings manager
 	// Use a fixed context.jsonl file per channel (not timestamped like coding-agent)
@@ -477,7 +506,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 
 	// Mutable per-run state - event handler references this
 	const runState = {
-		ctx: null as SlackContext | null,
+		ctx: null as ChatContext | null,
 		logCtx: null as { channelId: string; userName?: string; channelName?: string } | null,
 		queue: null as {
 			enqueue(fn: () => Promise<void>, errorContext: string): void;
@@ -591,13 +620,19 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 				for (const thinking of thinkingParts) {
 					log.logThinking(logCtx, thinking);
 					queue.enqueueMessage(`_${thinking}_`, "main", "thinking main");
-					queue.enqueueMessage(`_${thinking}_`, "thread", "thinking thread", false);
+					// Skip thread duplicate on Telegram (no thread UI, would just repeat the main message)
+					if (platform !== "telegram") {
+						queue.enqueueMessage(`_${thinking}_`, "thread", "thinking thread", false);
+					}
 				}
 
 				if (text.trim()) {
 					log.logResponse(logCtx, text);
 					queue.enqueueMessage(text, "main", "response main");
-					queue.enqueueMessage(text, "thread", "response thread", false);
+					// Skip thread duplicate on Telegram
+					if (platform !== "telegram") {
+						queue.enqueueMessage(text, "thread", "response thread", false);
+					}
 				}
 			}
 		} else if (event.type === "compaction_start") {
@@ -619,16 +654,16 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 		}
 	});
 
-	// Slack message limit
-	const SLACK_MAX_LENGTH = 40000;
+	// Message length limit (Slack: 40K, Telegram: 4096)
+	const MESSAGE_MAX_LENGTH = platform === "telegram" ? 4000 : 40000;
 	const splitForSlack = (text: string): string[] => {
-		if (text.length <= SLACK_MAX_LENGTH) return [text];
+		if (text.length <= MESSAGE_MAX_LENGTH) return [text];
 		const parts: string[] = [];
 		let remaining = text;
 		let partNum = 1;
 		while (remaining.length > 0) {
-			const chunk = remaining.substring(0, SLACK_MAX_LENGTH - 50);
-			remaining = remaining.substring(SLACK_MAX_LENGTH - 50);
+			const chunk = remaining.substring(0, MESSAGE_MAX_LENGTH - 50);
+			remaining = remaining.substring(MESSAGE_MAX_LENGTH - 50);
 			const suffix = remaining.length > 0 ? `\n_(continued ${partNum}...)_` : "";
 			parts.push(chunk + suffix);
 			partNum++;
@@ -638,7 +673,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 
 	return {
 		async run(
-			ctx: SlackContext,
+			ctx: ChatContext,
 			_store: ChannelStore,
 			_pendingMessages?: PendingMessage[],
 		): Promise<{ stopReason: string; errorMessage?: string }> {
@@ -647,7 +682,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 
 			// Sync messages from log.jsonl that arrived while we were offline or busy
 			// Exclude the current message (it will be added via prompt())
-			const syncedCount = syncLogToSessionManager(sessionManager, channelDir, ctx.message.ts);
+			const syncedCount = syncLogToSessionManager(sessionManager, channelDir, ctx.message.messageId);
 			if (syncedCount > 0) {
 				log.logInfo(`[${channelId}] Synced ${syncedCount} messages from log.jsonl`);
 			}
@@ -671,6 +706,7 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 				ctx.channels,
 				ctx.users,
 				skills,
+				platform,
 			);
 			session.agent.state.systemPrompt = systemPrompt;
 
@@ -813,8 +849,8 @@ function createRunner(sandboxConfig: SandboxConfig, channelId: string, channelDi
 				} else if (finalText.trim()) {
 					try {
 						const mainText =
-							finalText.length > SLACK_MAX_LENGTH
-								? `${finalText.substring(0, SLACK_MAX_LENGTH - 50)}\n\n_(see thread for full response)_`
+							finalText.length > MESSAGE_MAX_LENGTH
+								? `${finalText.substring(0, MESSAGE_MAX_LENGTH - 50)}\n\n_(see thread for full response)_`
 								: finalText;
 						await ctx.replaceMessage(mainText);
 					} catch (err) {
