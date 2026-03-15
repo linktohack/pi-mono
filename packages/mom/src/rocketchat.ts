@@ -255,7 +255,7 @@ export class RocketChatBot implements ChatBot {
 
 	private connectWebSocket(): Promise<void> {
 		return new Promise((resolve, reject) => {
-			const wsUrl = this.config.url.replace(/^http/, "ws") + "/websocket";
+			const wsUrl = `${this.config.url.replace(/^http/, "ws")}/websocket`;
 			this.ws = new WebSocket(wsUrl);
 
 			let resolved = false;

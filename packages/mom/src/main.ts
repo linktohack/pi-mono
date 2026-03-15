@@ -2,6 +2,7 @@
 
 import { join, resolve } from "path";
 import { type AgentRunner, getOrCreateRunner, type Platform } from "./agent.js";
+import { DiscordBot } from "./discord.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
 import * as log from "./log.js";
@@ -24,6 +25,7 @@ const MOM_RC_USER = process.env.MOM_RC_USER;
 const MOM_RC_PASSWORD = process.env.MOM_RC_PASSWORD;
 const MOM_RC_AUTH_TOKEN = process.env.MOM_RC_AUTH_TOKEN;
 const MOM_RC_USER_ID = process.env.MOM_RC_USER_ID;
+const MOM_DISCORD_BOT_TOKEN = process.env.MOM_DISCORD_BOT_TOKEN;
 
 interface ParsedArgs {
 	workingDir?: string;
@@ -69,14 +71,15 @@ function parseArgs(): ParsedArgs {
 // Platform detection: explicit flag > env var auto-detect
 function detectPlatform(explicit?: Platform): Platform {
 	if (explicit) {
-		if (!["slack", "telegram", "rocketchat"].includes(explicit)) {
-			console.error(`Unknown platform: ${explicit}. Use: slack, telegram, rocketchat`);
+		if (!["slack", "telegram", "rocketchat", "discord"].includes(explicit)) {
+			console.error(`Unknown platform: ${explicit}. Use: slack, telegram, rocketchat, discord`);
 			process.exit(1);
 		}
 		return explicit;
 	}
 	if (MOM_RC_URL) return "rocketchat";
 	if (MOM_TELEGRAM_BOT_TOKEN) return "telegram";
+	if (MOM_DISCORD_BOT_TOKEN) return "discord";
 	return "slack";
 }
 
@@ -96,7 +99,7 @@ if (parsedArgs.downloadChannel) {
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
 	console.error(
-		"Usage: mom [--platform=slack|telegram|rocketchat] [--sandbox=host|docker:<name>] <working-directory>",
+		"Usage: mom [--platform=slack|telegram|rocketchat|discord] [--sandbox=host|docker:<name>] <working-directory>",
 	);
 	console.error("       mom --download <channel-id>");
 	process.exit(1);
@@ -121,6 +124,10 @@ if (platform === "rocketchat") {
 		);
 		process.exit(1);
 	}
+}
+if (platform === "discord" && !MOM_DISCORD_BOT_TOKEN) {
+	console.error("Missing env: MOM_DISCORD_BOT_TOKEN");
+	process.exit(1);
 }
 
 await validateSandbox(sandbox);
@@ -172,7 +179,7 @@ function createChatContext(event: ChatEvent, bot: ChatBot, state: ChannelState, 
 	const eventFilename = isEvent ? event.text.match(/^\[EVENT:([^:]+):/)?.[1] : undefined;
 
 	// Truncation limit (Telegram: 4K, Slack: 40K)
-	const MAX_MAIN_LENGTH = platform === "telegram" ? 3500 : 35000;
+	const MAX_MAIN_LENGTH = platform === "telegram" ? 3500 : platform === "discord" ? 1900 : 35000;
 
 	return {
 		message: {
@@ -401,6 +408,12 @@ if (platform === "rocketchat") {
 } else if (platform === "telegram") {
 	chatBot = new TelegramBot(handler, {
 		token: MOM_TELEGRAM_BOT_TOKEN!,
+		workingDir,
+		store: sharedStore,
+	});
+} else if (platform === "discord") {
+	chatBot = new DiscordBot(handler, {
+		token: MOM_DISCORD_BOT_TOKEN!,
 		workingDir,
 		store: sharedStore,
 	});

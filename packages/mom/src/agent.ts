@@ -138,7 +138,7 @@ function loadMomSkills(channelDir: string, workspacePath: string): Skill[] {
 	return Array.from(skillMap.values());
 }
 
-export type Platform = "slack" | "telegram" | "rocketchat";
+export type Platform = "slack" | "telegram" | "rocketchat" | "discord";
 
 function buildSystemPrompt(
 	workspacePath: string,
@@ -170,7 +170,14 @@ function buildSystemPrompt(
 - Bash working directory: ${process.cwd()}
 - Be careful with system modifications`;
 
-	const platformName = platform === "telegram" ? "Telegram" : platform === "rocketchat" ? "Rocket.Chat" : "Slack";
+	const platformName =
+		platform === "telegram"
+			? "Telegram"
+			: platform === "rocketchat"
+				? "Rocket.Chat"
+				: platform === "discord"
+					? "Discord"
+					: "Slack";
 	const formattingSection =
 		platform === "telegram"
 			? `## Telegram Formatting (mrkdwn)
@@ -180,7 +187,11 @@ Keep messages concise — Telegram has a 4096 character limit per message.`
 				? `## Rocket.Chat Formatting (Markdown)
 Bold: *text* or **text**, Italic: _text_, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: [text](url)
 Standard Markdown formatting is supported.`
-				: `## Slack Formatting (mrkdwn, NOT Markdown)
+				: platform === "discord"
+					? `## Discord Formatting (Markdown)
+Bold: **text**, Italic: *text*, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: [text](url)
+Keep messages under 2000 characters. Use threads for long output.`
+					: `## Slack Formatting (mrkdwn, NOT Markdown)
 Bold: *text*, Italic: _text_, Code: \`code\`, Block: \`\`\`code\`\`\`, Links: <url|text>
 Do NOT use **double asterisks** or [markdown](links).`;
 
@@ -190,7 +201,14 @@ Do NOT use **double asterisks** or [markdown](links).`;
 Chats: ${channelMappings}
 
 Users: ${userMappings}`
-			: `## Slack IDs
+			: platform === "discord"
+				? `## Discord IDs
+Channels: ${channelMappings}
+
+Users: ${userMappings}
+
+When mentioning users, use <@userId> format.`
+				: `## Slack IDs
 Channels: ${channelMappings}
 
 Users: ${userMappings}
@@ -659,7 +677,7 @@ function createRunner(
 	});
 
 	// Message length limit (Slack: 40K, Telegram: 4096)
-	const MESSAGE_MAX_LENGTH = platform === "telegram" ? 4000 : 40000;
+	const MESSAGE_MAX_LENGTH = platform === "telegram" ? 4000 : platform === "discord" ? 1900 : 40000;
 	const splitForSlack = (text: string): string[] => {
 		if (text.length <= MESSAGE_MAX_LENGTH) return [text];
 		const parts: string[] = [];
