@@ -1,5 +1,5 @@
 import { Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
-import { getModel, type ImageContent } from "@mariozechner/pi-ai";
+import { type Api, getModel, type ImageContent, type Model } from "@mariozechner/pi-ai";
 import {
 	AgentSession,
 	AuthStorage,
@@ -23,8 +23,53 @@ import type { ChannelStore } from "./store.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 import type { ChannelInfo, ChatContext, UserInfo } from "./types.js";
 
-// Hardcoded model for now - TODO: make configurable (issue #63)
-const model = getModel("anthropic", "claude-sonnet-4-5");
+// Shared auth storage and model registry
+// Try ~/.pi/agent/auth.json first (shared with coding-agent), fall back to ~/.pi/mom/auth.json
+const agentAuthPath = join(homedir(), ".pi", "agent", "auth.json");
+const momAuthPath = join(homedir(), ".pi", "mom", "auth.json");
+const authStorage = AuthStorage.create(existsSync(agentAuthPath) ? agentAuthPath : momAuthPath);
+const modelRegistry = ModelRegistry.create(authStorage);
+
+let selectedModel: Model<Api> = getModel("anthropic", "claude-sonnet-4-6");
+
+export function setModel(modelReference: string): void {
+	const allModels = modelRegistry.getAll();
+
+	// Try exact provider/id match
+	const slashIndex = modelReference.indexOf("/");
+	if (slashIndex !== -1) {
+		const provider = modelReference.substring(0, slashIndex);
+		const modelId = modelReference.substring(slashIndex + 1);
+		const exact = allModels.find(
+			(m) => m.provider.toLowerCase() === provider.toLowerCase() && m.id.toLowerCase() === modelId.toLowerCase(),
+		);
+		if (exact) {
+			selectedModel = exact;
+			return;
+		}
+	}
+
+	// Try matching by id alone
+	const byId = allModels.find((m) => m.id.toLowerCase() === modelReference.toLowerCase());
+	if (byId) {
+		selectedModel = byId;
+		return;
+	}
+
+	// Try partial match
+	const partial = allModels.filter(
+		(m) =>
+			m.id.toLowerCase().includes(modelReference.toLowerCase()) ||
+			m.name?.toLowerCase().includes(modelReference.toLowerCase()),
+	);
+	if (partial.length === 1) {
+		selectedModel = partial[0];
+		return;
+	}
+
+	console.error(`Model "${modelReference}" not found. Available models from registry (including models.json).`);
+	process.exit(1);
+}
 
 export interface PendingMessage {
 	userName: string;
@@ -48,6 +93,8 @@ async function getAnthropicApiKey(authStorage: AuthStorage): Promise<string> {
 		throw new Error(
 			"No API key found for anthropic.\n\n" +
 				"Set an API key environment variable, or use /login with Anthropic and link to auth.json from " +
+				join(homedir(), ".pi", "agent", "auth.json") +
+				" or " +
 				join(homedir(), ".pi", "mom", "auth.json"),
 		);
 	}
@@ -517,16 +564,13 @@ function createRunner(
 	const sessionManager = SessionManager.open(contextFile, channelDir);
 	const settingsManager = createMomSettingsManager(join(channelDir, ".."));
 
-	// Create AuthStorage and ModelRegistry
-	// Auth stored outside workspace so agent can't access it
-	const authStorage = AuthStorage.create(join(homedir(), ".pi", "mom", "auth.json"));
-	const modelRegistry = ModelRegistry.create(authStorage);
+	// Use module-level authStorage and modelRegistry (shared across channels)
 
 	// Create agent
 	const agent = new Agent({
 		initialState: {
 			systemPrompt,
-			model,
+			model: selectedModel,
 			thinkingLevel: "off",
 			tools,
 		},
@@ -938,7 +982,7 @@ function createRunner(
 						lastAssistantMessage.usage.cacheRead +
 						lastAssistantMessage.usage.cacheWrite
 					: 0;
-				const contextWindow = model.contextWindow || 200000;
+				const contextWindow = selectedModel.contextWindow || 200000;
 
 				const summary = log.logUsageSummary(runState.logCtx!, runState.totalUsage, contextTokens, contextWindow);
 				runState.queue.enqueue(() => ctx.respondInThread(summary), "usage summary");

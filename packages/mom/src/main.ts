@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
-import { type AgentRunner, getOrCreateRunner, type Platform } from "./agent.js";
+import { type AgentRunner, getOrCreateRunner, type Platform, setModel } from "./agent.js";
 import { DiscordBot } from "./discord.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
@@ -32,6 +32,7 @@ interface ParsedArgs {
 	sandbox: SandboxConfig;
 	downloadChannel?: string;
 	platform?: Platform;
+	model?: string;
 }
 
 function parseArgs(): ParsedArgs {
@@ -40,6 +41,7 @@ function parseArgs(): ParsedArgs {
 	let workingDir: string | undefined;
 	let downloadChannelId: string | undefined;
 	let explicitPlatform: Platform | undefined;
+	let modelArg: string | undefined;
 
 	for (let i = 0; i < args.length; i++) {
 		const arg = args[i];
@@ -55,6 +57,10 @@ function parseArgs(): ParsedArgs {
 			explicitPlatform = arg.slice("--platform=".length) as Platform;
 		} else if (arg === "--platform") {
 			explicitPlatform = args[++i] as Platform;
+		} else if (arg.startsWith("--model=")) {
+			modelArg = arg.slice("--model=".length);
+		} else if (arg === "--model") {
+			modelArg = args[++i];
 		} else if (!arg.startsWith("-")) {
 			workingDir = arg;
 		}
@@ -65,6 +71,7 @@ function parseArgs(): ParsedArgs {
 		sandbox,
 		downloadChannel: downloadChannelId,
 		platform: explicitPlatform,
+		model: modelArg,
 	};
 }
 
@@ -84,6 +91,11 @@ function detectPlatform(explicit?: Platform): Platform {
 }
 
 const parsedArgs = parseArgs();
+
+if (parsedArgs.model) {
+	setModel(parsedArgs.model);
+}
+
 const platform = detectPlatform(parsedArgs.platform);
 
 // Handle --download mode
@@ -99,7 +111,7 @@ if (parsedArgs.downloadChannel) {
 // Normal bot mode - require working dir
 if (!parsedArgs.workingDir) {
 	console.error(
-		"Usage: mom [--platform=slack|telegram|rocketchat|discord] [--sandbox=host|docker:<name>] <working-directory>",
+		"Usage: mom [--platform=slack|telegram|rocketchat|discord] [--model=provider/model-id|model-id] [--sandbox=host|docker:<name>] <working-directory>",
 	);
 	console.error("       mom --download <channel-id>");
 	process.exit(1);
