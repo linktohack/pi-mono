@@ -102,6 +102,26 @@ function getMemory(channelDir: string): string {
 	return parts.join("\n\n");
 }
 
+function loadWorkspaceFile(workspaceDir: string, filename: string): string | null {
+	const filePath = join(workspaceDir, filename);
+	if (!existsSync(filePath)) return null;
+	try {
+		let content = readFileSync(filePath, "utf-8").trim();
+		if (!content) return null;
+		// Strip YAML frontmatter if present
+		if (content.startsWith("---")) {
+			const endIndex = content.indexOf("---", 3);
+			if (endIndex !== -1) {
+				content = content.slice(endIndex + 3).trim();
+			}
+		}
+		return content || null;
+	} catch (error) {
+		log.logWarning(`Failed to read ${filename}`, `${filePath}: ${error}`);
+		return null;
+	}
+}
+
 function loadMomSkills(channelDir: string, workspacePath: string): Skill[] {
 	const skillMap = new Map<string, Skill>();
 
@@ -149,6 +169,7 @@ function buildSystemPrompt(
 	users: UserInfo[],
 	skills: Skill[],
 	platform: Platform = "slack",
+	workspaceDir?: string,
 ): string {
 	const channelPath = `${workspacePath}/${channelId}`;
 	const isDocker = sandboxConfig.type === "docker";
@@ -215,7 +236,13 @@ Users: ${userMappings}
 
 When mentioning users, use <@username> format (e.g., <@mario>).`;
 
-	return `You are mom, a ${platformName} bot assistant. Be concise. No emojis.
+	const soul = workspaceDir ? loadWorkspaceFile(workspaceDir, "SOUL.md") : null;
+	const user = workspaceDir ? loadWorkspaceFile(workspaceDir, "USER.md") : null;
+
+	const intro = soul || `You are mom, a ${platformName} bot assistant. Be concise. No emojis.`;
+	const userProfile = user ? `\n\n## User Profile\n${user}` : "";
+
+	return `${intro}${userProfile}
 
 ## Context
 - For current date/time, use: date
@@ -231,6 +258,8 @@ ${envDescription}
 
 ## Workspace Layout
 ${workspacePath}/
+├── SOUL.md                      # Your personality and identity (optional, you may update)
+├── USER.md                      # User context and preferences (optional, you may update)
 ├── MEMORY.md                    # Global memory (all channels)
 ├── skills/                      # Global CLI tools you create
 └── ${channelId}/                # This channel
@@ -467,9 +496,20 @@ function createRunner(
 	const tools = createMomTools(executor);
 
 	// Initial system prompt (will be updated each run with fresh memory/channels/users/skills)
+	const hostWorkspaceDir = join(channelDir, "..");
 	const memory = getMemory(channelDir);
 	const skills = loadMomSkills(channelDir, workspacePath);
-	const systemPrompt = buildSystemPrompt(workspacePath, channelId, memory, sandboxConfig, [], [], skills, platform);
+	const systemPrompt = buildSystemPrompt(
+		workspacePath,
+		channelId,
+		memory,
+		sandboxConfig,
+		[],
+		[],
+		skills,
+		platform,
+		hostWorkspaceDir,
+	);
 
 	// Create session manager and settings manager
 	// Use a fixed context.jsonl file per channel (not timestamped like coding-agent)
@@ -729,6 +769,7 @@ function createRunner(
 				ctx.users,
 				skills,
 				platform,
+				hostWorkspaceDir,
 			);
 			session.agent.state.systemPrompt = systemPrompt;
 
