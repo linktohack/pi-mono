@@ -76,6 +76,7 @@ export class SlackBot implements ChatBot {
 	private users = new Map<string, SlackUser>();
 	private channels = new Map<string, SlackChannel>();
 	private queues = new Map<string, ChannelQueue>();
+	private soloChannels = new Set<string>();
 
 	constructor(
 		handler: MomHandler,
@@ -300,15 +301,17 @@ export class SlackBot implements ChatBot {
 
 			const isDM = e.channel_type === "im";
 			const isBotMention = e.text?.includes(`<@${this.botUserId}>`);
+			const isSolo = this.soloChannels.has(e.channel);
 
 			// Skip channel @mentions - already handled by app_mention event
-			if (!isDM && isBotMention) {
+			// (but not in solo channels where we handle everything here)
+			if (!isDM && !isSolo && isBotMention) {
 				ack();
 				return;
 			}
 
 			const chatEvent: ChatEvent = {
-				type: isDM ? "dm" : "mention",
+				type: isDM || isSolo ? "dm" : "mention",
 				channel: e.channel,
 				messageId: e.ts,
 				user: e.user,
@@ -327,8 +330,8 @@ export class SlackBot implements ChatBot {
 				return;
 			}
 
-			// Only trigger handler for DMs
-			if (isDM) {
+			// Trigger handler for DMs and solo channels (only user + bot)
+			if (isDM || isSolo) {
 				// Check for stop command - execute immediately, don't queue!
 				if (chatEvent.text.toLowerCase().trim() === "stop") {
 					if (this.handler.isRunning(e.channel)) {
@@ -529,11 +532,16 @@ export class SlackBot implements ChatBot {
 				limit: 200,
 				cursor,
 			});
-			const channels = result.channels as Array<{ id?: string; name?: string; is_member?: boolean }> | undefined;
+			const channels = result.channels as
+				| Array<{ id?: string; name?: string; is_member?: boolean; num_members?: number }>
+				| undefined;
 			if (channels) {
 				for (const c of channels) {
 					if (c.id && c.name && c.is_member) {
 						this.channels.set(c.id, { id: c.id, name: c.name });
+						if (c.num_members !== undefined && c.num_members <= 2) {
+							this.soloChannels.add(c.id);
+						}
 					}
 				}
 			}

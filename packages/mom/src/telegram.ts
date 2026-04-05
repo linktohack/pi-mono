@@ -77,6 +77,7 @@ export class TelegramBot implements ChatBot {
 	private users = new Map<string, UserInfo>();
 	private channels = new Map<string, ChannelInfo>();
 	private queues = new Map<string, ChannelQueue>();
+	private soloChannels = new Set<string>();
 
 	constructor(handler: MomHandler, config: { token: string; workingDir: string; store: ChannelStore }) {
 		this.handler = handler;
@@ -245,11 +246,22 @@ export class TelegramBot implements ChatBot {
 			const isMentioned =
 				this.botUsername !== null && (msg.text || msg.caption || "").includes(`@${this.botUsername}`);
 
+			// Detect solo channels on first message
+			if (!isDM && !this.soloChannels.has(chatId)) {
+				try {
+					const count = await ctx.api.getChatMemberCount(msg.chat.id);
+					if (count <= 2) this.soloChannels.add(chatId);
+				} catch {
+					// Ignore — may not have permission
+				}
+			}
+			const isSolo = this.soloChannels.has(chatId);
+
 			// Text from message body or caption (for photos/documents with captions)
 			let rawText = msg.text || msg.caption || "";
 
-			// In group chats, only respond to @mentions
-			if (!isDM && !isMentioned) {
+			// In group chats, only respond to @mentions (unless solo)
+			if (!isDM && !isSolo && !isMentioned) {
 				this.logUserMessage(chatId, userId, messageId, rawText, userName, displayName, []);
 				return;
 			}

@@ -91,6 +91,7 @@ export class RocketChatBot implements ChatBot {
 	private users = new Map<string, UserInfo>();
 	private channels = new Map<string, ChannelInfo>();
 	private queues = new Map<string, ChannelQueue>();
+	private soloChannels = new Set<string>();
 
 	constructor(handler: MomHandler, config: RCConfig) {
 		this.handler = handler;
@@ -377,8 +378,9 @@ export class RocketChatBot implements ChatBot {
 			}
 		}
 
-		// In channels, only respond to @mentions
-		if (!isDM && !isMentioned) {
+		// In channels, only respond to @mentions (unless solo — just user + bot)
+		const isSolo = this.soloChannels.has(roomId);
+		if (!isDM && !isSolo && !isMentioned) {
 			this.logUserMessage(roomId, userId, messageId, text, userName, displayName, []);
 			return;
 		}
@@ -488,6 +490,9 @@ export class RocketChatBot implements ChatBot {
 			for (const c of res.channels || []) {
 				if (c._id && c.name) {
 					this.channels.set(c._id, { id: c._id, name: c.name });
+					if (c.usersCount !== undefined && c.usersCount <= 2) {
+						this.soloChannels.add(c._id);
+					}
 				}
 			}
 			total = res.total || 0;
@@ -522,6 +527,9 @@ export class RocketChatBot implements ChatBot {
 			for (const g of res.groups || []) {
 				if (g._id && g.name) {
 					this.channels.set(g._id, { id: g._id, name: g.name });
+					if (g.usersCount !== undefined && g.usersCount <= 2) {
+						this.soloChannels.add(g._id);
+					}
 				}
 			}
 			total = res.total || 0;

@@ -53,6 +53,7 @@ export class DiscordBot implements ChatBot {
 	private users = new Map<string, UserInfo>();
 	private channels = new Map<string, ChannelInfo>();
 	private queues = new Map<string, ChannelQueue>();
+	private soloChannels = new Set<string>();
 
 	constructor(handler: MomHandler, config: { token: string; workingDir: string; store: ChannelStore }) {
 		this.handler = handler;
@@ -248,8 +249,16 @@ export class DiscordBot implements ChatBot {
 			const isDM = msg.channel.isDMBased();
 			const isMentioned = this.botUserId !== null && msg.mentions.has(this.botUserId);
 
-			// In guild channels, only respond to @mentions
-			if (!isDM && !isMentioned) {
+			// Detect solo channels on first message
+			if (!isDM && !this.soloChannels.has(channelId) && "members" in msg.channel && "size" in msg.channel.members) {
+				if ((msg.channel.members as Map<string, unknown>).size <= 2) {
+					this.soloChannels.add(channelId);
+				}
+			}
+			const isSolo = this.soloChannels.has(channelId);
+
+			// In guild channels, only respond to @mentions (unless solo)
+			if (!isDM && !isSolo && !isMentioned) {
 				this.logUserMessage(channelId, userId, messageId, msg.content, userName, displayName, []);
 				return;
 			}
