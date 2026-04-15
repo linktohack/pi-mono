@@ -251,13 +251,24 @@ export class SlackBot implements ChatBot {
 				return;
 			}
 
-			// Check for stop command - execute immediately, don't queue!
-			if (chatEvent.text.toLowerCase().trim() === "stop") {
+			// Check for stop/compact/new commands - execute immediately, don't queue!
+			const cmd = chatEvent.text.toLowerCase().trim();
+			if (cmd === "stop") {
 				if (this.handler.isRunning(e.channel)) {
 					this.handler.handleStop(e.channel, this); // Don't await, don't queue
 				} else {
 					this.postMessage(e.channel, "_Nothing running_");
 				}
+				ack();
+				return;
+			}
+			if (cmd === "compact") {
+				this.handler.handleCompact(e.channel, this);
+				ack();
+				return;
+			}
+			if (cmd === "new") {
+				this.handler.handleNew(e.channel, this);
 				ack();
 				return;
 			}
@@ -332,13 +343,24 @@ export class SlackBot implements ChatBot {
 
 			// Trigger handler for DMs and solo channels (only user + bot)
 			if (isDM || isSolo) {
-				// Check for stop command - execute immediately, don't queue!
-				if (chatEvent.text.toLowerCase().trim() === "stop") {
+				// Check for stop/compact/new commands - execute immediately, don't queue!
+				const dmCmd = chatEvent.text.toLowerCase().trim();
+				if (dmCmd === "stop") {
 					if (this.handler.isRunning(e.channel)) {
 						this.handler.handleStop(e.channel, this); // Don't await, don't queue
 					} else {
 						this.postMessage(e.channel, "_Nothing running_");
 					}
+					ack();
+					return;
+				}
+				if (dmCmd === "compact") {
+					this.handler.handleCompact(e.channel, this);
+					ack();
+					return;
+				}
+				if (dmCmd === "new") {
+					this.handler.handleNew(e.channel, this);
 					ack();
 					return;
 				}

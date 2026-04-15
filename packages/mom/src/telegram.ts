@@ -286,13 +286,22 @@ export class TelegramBot implements ChatBot {
 			// Log user message
 			this.logUserMessage(chatId, userId, messageId, rawText, userName, displayName, attachments);
 
-			// Check for stop command
-			if (chatEvent.text.toLowerCase().trim() === "stop") {
+			// Check for stop/compact/new commands
+			const cmd = chatEvent.text.toLowerCase().trim();
+			if (cmd === "stop") {
 				if (this.handler.isRunning(chatId)) {
 					this.handler.handleStop(chatId, this);
 				} else {
 					this.postMessage(chatId, "_Nothing running_");
 				}
+				return;
+			}
+			if (cmd === "compact") {
+				this.handler.handleCompact(chatId, this);
+				return;
+			}
+			if (cmd === "new") {
+				this.handler.handleNew(chatId, this);
 				return;
 			}
 

@@ -57,6 +57,8 @@ export interface MomHandler {
 	isRunning(channelId: string): boolean;
 	handleEvent(event: ChatEvent, bot: ChatBot, isEvent?: boolean): Promise<void>;
 	handleStop(channelId: string, bot: ChatBot): Promise<void>;
+	handleCompact(channelId: string, bot: ChatBot): Promise<void>;
+	handleNew(channelId: string, bot: ChatBot): Promise<void>;
 }
 
 export interface ChannelInfo {

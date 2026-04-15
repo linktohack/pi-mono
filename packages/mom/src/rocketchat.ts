@@ -406,13 +406,22 @@ export class RocketChatBot implements ChatBot {
 		// Log user message
 		this.logUserMessage(roomId, userId, messageId, text, userName, displayName, attachments);
 
-		// Check for stop command
-		if (chatEvent.text.toLowerCase().trim() === "stop") {
+		// Check for stop/compact/new commands
+		const cmd = chatEvent.text.toLowerCase().trim();
+		if (cmd === "stop") {
 			if (this.handler.isRunning(roomId)) {
 				this.handler.handleStop(roomId, this);
 			} else {
 				this.postMessage(roomId, "_Nothing running_");
 			}
+			return;
+		}
+		if (cmd === "compact") {
+			this.handler.handleCompact(roomId, this);
+			return;
+		}
+		if (cmd === "new") {
+			this.handler.handleNew(roomId, this);
 			return;
 		}
 

@@ -284,13 +284,22 @@ export class DiscordBot implements ChatBot {
 			// Log user message
 			this.logUserMessage(channelId, userId, messageId, rawText, userName, displayName, attachments);
 
-			// Check for stop command
-			if (chatEvent.text.toLowerCase().trim() === "stop") {
+			// Check for stop/compact/new commands
+			const cmd = chatEvent.text.toLowerCase().trim();
+			if (cmd === "stop") {
 				if (this.handler.isRunning(channelId)) {
 					this.handler.handleStop(channelId, this);
 				} else {
 					this.postMessage(channelId, "*Nothing running*");
 				}
+				return;
+			}
+			if (cmd === "compact") {
+				this.handler.handleCompact(channelId, this);
+				return;
+			}
+			if (cmd === "new") {
+				this.handler.handleNew(channelId, this);
 				return;
 			}
 

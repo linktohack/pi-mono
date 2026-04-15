@@ -85,6 +85,7 @@ export interface AgentRunner {
 		pendingMessages?: PendingMessage[],
 	): Promise<{ stopReason: string; errorMessage?: string }>;
 	abort(): void;
+	compact(): Promise<string>;
 }
 
 async function getAnthropicApiKey(authStorage: AuthStorage): Promise<string> {
@@ -1000,7 +1001,31 @@ function createRunner(
 		abort(): void {
 			session.abort();
 		},
+
+		async compact(): Promise<string> {
+			try {
+				const result = await session.compact();
+				return `Compacted: ${result.tokensBefore} tokens before`;
+			} catch (err) {
+				return `Compaction failed: ${err instanceof Error ? err.message : String(err)}`;
+			}
+		},
 	};
+}
+
+/**
+ * Reset a channel's runner, clearing all conversation context.
+ * Deletes the cached runner and the context.jsonl file so a fresh session starts on next message.
+ */
+export async function resetRunner(channelId: string, channelDir: string): Promise<void> {
+	channelRunners.delete(channelId);
+	const contextFile = join(channelDir, "context.jsonl");
+	const { unlink } = await import("fs/promises");
+	try {
+		await unlink(contextFile);
+	} catch {
+		// File may not exist, that's fine
+	}
 }
 
 /**

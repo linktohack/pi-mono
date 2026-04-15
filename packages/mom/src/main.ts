@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { join, resolve } from "path";
-import { type AgentRunner, getOrCreateRunner, type Platform, setModel } from "./agent.js";
+import { type AgentRunner, getOrCreateRunner, type Platform, resetRunner, setModel } from "./agent.js";
 import { DiscordBot } from "./discord.js";
 import { downloadChannel } from "./download.js";
 import { createEventsWatcher } from "./events.js";
@@ -358,6 +358,34 @@ const handler: MomHandler = {
 		} else {
 			await bot.postMessage(channelId, "_Nothing running_");
 		}
+	},
+
+	async handleCompact(channelId: string, bot: ChatBot): Promise<void> {
+		const state = channelStates.get(channelId);
+		if (state?.running) {
+			await bot.postMessage(channelId, "_Can't compact while running. Stop first._");
+			return;
+		}
+		if (!state) {
+			await bot.postMessage(channelId, "_No session to compact_");
+			return;
+		}
+		const ts = await bot.postMessage(channelId, "_Compacting..._");
+		const result = await state.runner.compact();
+		await bot.updateMessage(channelId, ts, `_${result}_`);
+	},
+
+	async handleNew(channelId: string, bot: ChatBot): Promise<void> {
+		const state = channelStates.get(channelId);
+		if (state?.running) {
+			await bot.postMessage(channelId, "_Can't reset while running. Stop first._");
+			return;
+		}
+		const channelDir = join(workingDir, channelId);
+		await resetRunner(channelId, channelDir);
+		// Remove cached state so it gets recreated with a fresh runner
+		channelStates.delete(channelId);
+		await bot.postMessage(channelId, "_New session started_");
 	},
 
 	async handleEvent(event: ChatEvent, bot: ChatBot, isEvent?: boolean): Promise<void> {
