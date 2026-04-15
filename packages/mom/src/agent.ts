@@ -123,7 +123,7 @@ function getMemory(channelDir: string): string {
 		try {
 			const content = readFileSync(workspaceMemoryPath, "utf-8").trim();
 			if (content) {
-				parts.push(`### Global Workspace Memory\n${content}`);
+				parts.push(`${content}`);
 			}
 		} catch (error) {
 			log.logWarning("Failed to read workspace memory", `${workspaceMemoryPath}: ${error}`);
@@ -136,7 +136,7 @@ function getMemory(channelDir: string): string {
 		try {
 			const content = readFileSync(channelMemoryPath, "utf-8").trim();
 			if (content) {
-				parts.push(`### Channel-Specific Memory\n${content}`);
+				parts.push(`${content}`);
 			}
 		} catch (error) {
 			log.logWarning("Failed to read channel memory", `${channelMemoryPath}: ${error}`);
@@ -288,9 +288,13 @@ When mentioning users, use <@username> format (e.g., <@mario>).`;
 	const user = workspaceDir ? loadWorkspaceFile(workspaceDir, "USER.md") : null;
 
 	const intro = soul || `You are mom, a ${platformName} bot assistant. Be concise. No emojis.`;
-	const userProfile = user ? `\n\n## User Profile\n${user}` : "";
+	const userProfile = user ? `\n\n${user}` : "";
 
-	return `${intro}${userProfile}
+	return `${intro}
+
+${userProfile}
+
+${memory}
 
 ## Context
 - For current date/time, use: date
@@ -401,14 +405,6 @@ When writing programs that create immediate events (email watchers, webhook hand
 ### Limits
 Maximum 5 events can be queued. Don't create excessive immediate or periodic events.
 
-## Memory
-Write to MEMORY.md files to persist context across conversations.
-- Global (${workspacePath}/MEMORY.md): skills, preferences, project info
-- Channel (${channelPath}/MEMORY.md): channel-specific decisions, ongoing work
-Update when you learn something important or when asked to remember something.
-
-### Current Memory
-${memory}
 
 ## System Configuration Log
 Maintain ${workspacePath}/SYSTEM.md to log all environment modifications:
