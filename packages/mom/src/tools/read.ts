@@ -1,5 +1,5 @@
-import type { AgentTool } from "@mariozechner/pi-agent-core";
-import type { ImageContent, TextContent } from "@mariozechner/pi-ai";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { Type } from "@sinclair/typebox";
 import { extname } from "path";
 import type { Executor } from "../sandbox.js";
@@ -29,6 +29,12 @@ const readSchema = Type.Object({
 	path: Type.String({ description: "Path to the file to read (relative or absolute)" }),
 	offset: Type.Optional(Type.Number({ description: "Line number to start reading from (1-indexed)" })),
 	limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
+	maxBytes: Type.Optional(
+		Type.Number({
+			description:
+				"Override output size limit in bytes (default: 50KB). Use when you need larger output, e.g. 200000 for 200KB.",
+		}),
+	),
 });
 
 interface ReadToolDetails {
@@ -43,7 +49,12 @@ export function createReadTool(executor: Executor): AgentTool<typeof readSchema>
 		parameters: readSchema,
 		execute: async (
 			_toolCallId: string,
-			{ path, offset, limit }: { label: string; path: string; offset?: number; limit?: number },
+			{
+				path,
+				offset,
+				limit,
+				maxBytes,
+			}: { label: string; path: string; offset?: number; limit?: number; maxBytes?: number },
 			signal?: AbortSignal,
 		): Promise<{ content: (TextContent | ImageContent)[]; details: ReadToolDetails | undefined }> => {
 			const mimeType = isImageFile(path);
@@ -106,15 +117,16 @@ export function createReadTool(executor: Executor): AgentTool<typeof readSchema>
 			}
 
 			// Apply truncation (respects both line and byte limits)
-			const truncation = truncateHead(selectedContent);
+			const effectiveMaxBytes = maxBytes ?? DEFAULT_MAX_BYTES;
+			const truncation = truncateHead(selectedContent, { maxBytes: effectiveMaxBytes });
 
 			let outputText: string;
 			let details: ReadToolDetails | undefined;
 
 			if (truncation.firstLineExceedsLimit) {
-				// First line at offset exceeds 50KB - tell model to use bash
+				// First line at offset exceeds limit - tell model to use bash
 				const firstLineSize = formatSize(Buffer.byteLength(selectedContent.split("\n")[0], "utf-8"));
-				outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(DEFAULT_MAX_BYTES)} limit. Use bash: sed -n '${startLineDisplay}p' ${path} | head -c ${DEFAULT_MAX_BYTES}]`;
+				outputText = `[Line ${startLineDisplay} is ${firstLineSize}, exceeds ${formatSize(effectiveMaxBytes)} limit. Use bash: sed -n '${startLineDisplay}p' ${path} | head -c ${effectiveMaxBytes}]`;
 				details = { truncation };
 			} else if (truncation.truncated) {
 				// Truncation occurred - build actionable notice

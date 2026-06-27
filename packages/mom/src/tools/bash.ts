@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentTool } from "@mariozechner/pi-agent-core";
+import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "@sinclair/typebox";
 import type { Executor } from "../sandbox.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, type TruncationResult, truncateTail } from "./truncate.js";
@@ -19,6 +19,12 @@ const bashSchema = Type.Object({
 	label: Type.String({ description: "Brief description of what this command does (shown to user)" }),
 	command: Type.String({ description: "Bash command to execute" }),
 	timeout: Type.Optional(Type.Number({ description: "Timeout in seconds (optional, no default timeout)" })),
+	maxBytes: Type.Optional(
+		Type.Number({
+			description:
+				"Override output size limit in bytes (default: 50KB). Use when you need larger output, e.g. 200000 for 200KB.",
+		}),
+	),
 });
 
 interface BashToolDetails {
@@ -30,11 +36,11 @@ export function createBashTool(executor: Executor): AgentTool<typeof bashSchema>
 	return {
 		name: "bash",
 		label: "bash",
-		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds.`,
+		description: `Execute a bash command in the current working directory. Returns stdout and stderr. Output is truncated to last ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). If truncated, full output is saved to a temp file. Optionally provide a timeout in seconds. Use maxBytes to override the size limit (e.g. 200000 for 200KB).`,
 		parameters: bashSchema,
 		execute: async (
 			_toolCallId: string,
-			{ command, timeout }: { label: string; command: string; timeout?: number },
+			{ command, timeout, maxBytes }: { label: string; command: string; timeout?: number; maxBytes?: number },
 			signal?: AbortSignal,
 		) => {
 			// Track output for potential temp file writing
@@ -52,7 +58,8 @@ export function createBashTool(executor: Executor): AgentTool<typeof bashSchema>
 			const totalBytes = Buffer.byteLength(output, "utf-8");
 
 			// Write to temp file if output exceeds limit
-			if (totalBytes > DEFAULT_MAX_BYTES) {
+			const effectiveMaxBytes = maxBytes ?? DEFAULT_MAX_BYTES;
+			if (totalBytes > effectiveMaxBytes) {
 				tempFilePath = getTempFilePath();
 				tempFileStream = createWriteStream(tempFilePath);
 				tempFileStream.write(output);
@@ -60,7 +67,7 @@ export function createBashTool(executor: Executor): AgentTool<typeof bashSchema>
 			}
 
 			// Apply tail truncation
-			const truncation = truncateTail(output);
+			const truncation = truncateTail(output, { maxBytes: effectiveMaxBytes });
 			let outputText = truncation.content || "(no output)";
 
 			// Build details with truncation info
