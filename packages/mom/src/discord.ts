@@ -371,31 +371,57 @@ export class DiscordBot implements ChatBot {
 // Discord message splitting (2000 char limit)
 // ============================================================================
 
+// Returns the opener line (e.g. "```ts") of a code fence left open at the end
+// of `text`, or null if all fences are balanced. Each line starting with ```
+// toggles the fence state; the opener is kept so we can reopen with its language.
+function openFenceAfter(text: string): string | null {
+	let opener: string | null = null;
+	for (const line of text.split("\n")) {
+		if (line.trimStart().startsWith("```")) {
+			opener = opener ? null : line.trim();
+		}
+	}
+	return opener;
+}
+
 function splitMessage(text: string, maxLength = 2000): string[] {
 	if (text.length <= maxLength) return [text];
 
 	const chunks: string[] = [];
 	let remaining = text;
+	// Opener of a fence we closed at a chunk boundary and must reopen on the next chunk.
+	let reopen: string | null = null;
 
 	while (remaining.length > 0) {
-		if (remaining.length <= maxLength) {
-			chunks.push(remaining);
+		const prefix = reopen ? `${reopen}\n` : "";
+
+		if (prefix.length + remaining.length <= maxLength) {
+			chunks.push(prefix + remaining);
 			break;
 		}
 
-		// Try to split at a newline
-		let splitIdx = remaining.lastIndexOf("\n", maxLength);
-		if (splitIdx < maxLength / 2) {
-			// No good newline break, split at space
-			splitIdx = remaining.lastIndexOf(" ", maxLength);
+		// Reserve room for the reopened opener and a possible closing fence ("\n```").
+		const budget = maxLength - prefix.length - 4;
+
+		// Try to split at a newline, then a space, then hard-split.
+		let splitIdx = remaining.lastIndexOf("\n", budget);
+		if (splitIdx < budget / 2) {
+			splitIdx = remaining.lastIndexOf(" ", budget);
 		}
-		if (splitIdx < maxLength / 2) {
-			// No good break point, hard split
-			splitIdx = maxLength;
+		if (splitIdx < budget / 2) {
+			splitIdx = budget;
 		}
 
-		chunks.push(remaining.substring(0, splitIdx));
+		let chunk = prefix + remaining.substring(0, splitIdx);
 		remaining = remaining.substring(splitIdx).trimStart();
+
+		// If this chunk ends inside a code fence, close it here and reopen next chunk.
+		reopen = openFenceAfter(chunk);
+		if (reopen) {
+			chunk += "\n```";
+		}
+
+		chunks.push(chunk);
 	}
 
 	return chunks;

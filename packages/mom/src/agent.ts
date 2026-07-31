@@ -759,16 +759,47 @@ function createRunner(
 
 	// Message length limit (Slack: 40K, Telegram: 4096)
 	const MESSAGE_MAX_LENGTH = platform === "telegram" ? 4000 : platform === "discord" ? 1900 : 40000;
+	// Returns the opener line (e.g. "```ts") of a code fence left open at the end
+	// of `text`, or null if all fences are balanced. Each line starting with ```
+	// toggles the fence state; the opener is kept so we can reopen with its language.
+	const openFenceAfter = (text: string): string | null => {
+		let opener: string | null = null;
+		for (const line of text.split("\n")) {
+			if (line.trimStart().startsWith("```")) opener = opener ? null : line.trim();
+		}
+		return opener;
+	};
 	const splitForSlack = (text: string): string[] => {
 		if (text.length <= MESSAGE_MAX_LENGTH) return [text];
 		const parts: string[] = [];
 		let remaining = text;
 		let partNum = 1;
+		// Opener of a fence we closed at a chunk boundary and must reopen next chunk.
+		let reopen: string | null = null;
 		while (remaining.length > 0) {
-			const chunk = remaining.substring(0, MESSAGE_MAX_LENGTH - 50);
-			remaining = remaining.substring(MESSAGE_MAX_LENGTH - 50);
-			const suffix = remaining.length > 0 ? `\n_(continued ${partNum}...)_` : "";
-			parts.push(chunk + suffix);
+			const prefix = reopen ? `${reopen}\n` : "";
+
+			// Last chunk fits as-is (no continued suffix).
+			if (prefix.length + remaining.length <= MESSAGE_MAX_LENGTH) {
+				parts.push(prefix + remaining);
+				break;
+			}
+
+			// Reserve room for the reopened opener, a closing fence ("\n```"), and the suffix.
+			const budget = MESSAGE_MAX_LENGTH - prefix.length - 4 - 40;
+			// Prefer a newline boundary so we never cut a fence line in half.
+			let splitIdx = remaining.lastIndexOf("\n", budget);
+			if (splitIdx < budget / 2) splitIdx = budget;
+
+			let chunk = prefix + remaining.substring(0, splitIdx);
+			remaining = remaining.substring(splitIdx).replace(/^\n/, "");
+
+			// If this chunk ends inside a code fence, close it before the suffix and
+			// reopen it on the next chunk so each message renders as valid markdown.
+			reopen = openFenceAfter(chunk);
+			if (reopen) chunk += "\n```";
+			chunk += `\n_(continued ${partNum}...)_`;
+			parts.push(chunk);
 			partNum++;
 		}
 		return parts;
