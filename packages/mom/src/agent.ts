@@ -1,17 +1,18 @@
-import { Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
-import { type Api, getModel, type ImageContent, type Model } from "@mariozechner/pi-ai";
+import { Agent, type AgentEvent } from "@earendil-works/pi-agent-core";
+import type { Api, ImageContent, Model } from "@earendil-works/pi-ai";
+import { getBuiltinModel as getModel } from "@earendil-works/pi-ai/providers/all";
 import {
 	AgentSession,
-	AuthStorage,
 	convertToLlm,
 	createExtensionRuntime,
 	formatSkillsForPrompt,
 	loadSkillsFromDir,
 	ModelRegistry,
+	ModelRuntime,
 	type ResourceLoader,
 	SessionManager,
 	type Skill,
-} from "@mariozechner/pi-coding-agent";
+} from "@earendil-works/pi-coding-agent";
 import { existsSync, readFileSync } from "fs";
 import { mkdir, writeFile } from "fs/promises";
 import { homedir } from "os";
@@ -23,12 +24,14 @@ import type { ChannelStore } from "./store.js";
 import { createMomTools, setUploadFunction } from "./tools/index.js";
 import type { ChannelInfo, ChatContext, UserInfo } from "./types.js";
 
-// Shared auth storage and model registry
+// Shared model runtime (auth + model catalog), shared across channels
 // Try ~/.pi/agent/auth.json first (shared with coding-agent), fall back to ~/.pi/mom/auth.json
 const agentAuthPath = join(homedir(), ".pi", "agent", "auth.json");
 const momAuthPath = join(homedir(), ".pi", "mom", "auth.json");
-const authStorage = AuthStorage.create(existsSync(agentAuthPath) ? agentAuthPath : momAuthPath);
-const modelRegistry = ModelRegistry.create(authStorage);
+const modelRuntime = await ModelRuntime.create({
+	authPath: existsSync(agentAuthPath) ? agentAuthPath : momAuthPath,
+});
+const modelRegistry = new ModelRegistry(modelRuntime);
 
 let selectedModel: Model<Api> = getModel("anthropic", "claude-sonnet-4-6");
 
@@ -88,18 +91,21 @@ export interface AgentRunner {
 	compact(): Promise<string>;
 }
 
-async function getAnthropicApiKey(authStorage: AuthStorage): Promise<string> {
-	const key = await authStorage.getApiKey("anthropic");
-	if (!key) {
+// The model runtime resolves credentials itself (API keys, OAuth, headers). This only
+// surfaces a friendlier error when the provider has no configured auth at all.
+async function resolveApiKey(provider: string): Promise<string | undefined> {
+	const key = await modelRegistry.getApiKeyForProvider(provider);
+	if (key) return key;
+	if (!modelRuntime.hasConfiguredAuth(provider)) {
 		throw new Error(
-			"No API key found for anthropic.\n\n" +
-				"Set an API key environment variable, or use /login with Anthropic and link to auth.json from " +
+			`No credentials found for ${provider}.\n\n` +
+				"Set an API key environment variable, or use /login with the provider and link to auth.json from " +
 				join(homedir(), ".pi", "agent", "auth.json") +
 				" or " +
 				join(homedir(), ".pi", "mom", "auth.json"),
 		);
 	}
-	return key;
+	return undefined;
 }
 
 const IMAGE_MIME_TYPES: Record<string, string> = {
@@ -561,7 +567,7 @@ function createRunner(
 	const sessionManager = SessionManager.open(contextFile, channelDir);
 	const settingsManager = createMomSettingsManager(join(channelDir, ".."));
 
-	// Use module-level authStorage and modelRegistry (shared across channels)
+	// Use module-level modelRuntime/modelRegistry (shared across channels)
 
 	// Create agent
 	const agent = new Agent({
@@ -572,7 +578,8 @@ function createRunner(
 			tools,
 		},
 		convertToLlm,
-		getApiKey: async () => getAnthropicApiKey(authStorage),
+		streamFn: (model, context, options) => modelRuntime.streamSimple(model, context, options),
+		getApiKey: resolveApiKey,
 	});
 
 	// Load existing messages
@@ -589,7 +596,9 @@ function createRunner(
 		getThemes: () => ({ themes: [], diagnostics: [] }),
 		getAgentsFiles: () => ({ agentsFiles: [] }),
 		getSystemPrompt: () => systemPrompt,
+		getSystemPromptSource: () => undefined,
 		getAppendSystemPrompt: () => [],
+		getAppendSystemPromptSources: () => [],
 		extendResources: () => {},
 		reload: async () => {},
 	};
@@ -602,7 +611,7 @@ function createRunner(
 		sessionManager,
 		settingsManager,
 		cwd: process.cwd(),
-		modelRegistry,
+		modelRuntime,
 		resourceLoader,
 		baseToolsOverride,
 	});
