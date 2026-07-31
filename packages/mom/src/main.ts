@@ -388,6 +388,20 @@ const handler: MomHandler = {
 		await bot.postMessage(channelId, "_New session started_");
 	},
 
+	async handleModel(channelId: string, bot: ChatBot, modelReference?: string): Promise<void> {
+		const state = getState(channelId);
+		if (!modelReference) {
+			await bot.postMessage(channelId, `_Model: ${state.runner.getModel()}_`);
+			return;
+		}
+		if (state.running) {
+			await bot.postMessage(channelId, "_Can't switch model while running. Stop first._");
+			return;
+		}
+		const result = await state.runner.setModel(modelReference);
+		await bot.postMessage(channelId, `_${result}_`);
+	},
+
 	async handleEvent(event: ChatEvent, bot: ChatBot, isEvent?: boolean): Promise<void> {
 		const state = getState(event.channel);
 

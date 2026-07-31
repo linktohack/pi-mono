@@ -59,6 +59,8 @@ export interface MomHandler {
 	handleStop(channelId: string, bot: ChatBot): Promise<void>;
 	handleCompact(channelId: string, bot: ChatBot): Promise<void>;
 	handleNew(channelId: string, bot: ChatBot): Promise<void>;
+	/** `modelReference` is undefined when the user just asks which model is active. */
+	handleModel(channelId: string, bot: ChatBot, modelReference?: string): Promise<void>;
 }
 
 export interface ChannelInfo {

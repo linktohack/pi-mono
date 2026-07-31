@@ -304,6 +304,13 @@ export class TelegramBot implements ChatBot {
 				this.handler.handleNew(chatId, this);
 				return;
 			}
+			// "model" reports the current model, "model <ref>" switches. A model reference never
+			// contains spaces, so "model this data for me" stays a normal message.
+			const modelCmd = cmd.match(/^model(?:\s+(\S+))?$/);
+			if (modelCmd) {
+				this.handler.handleModel(chatId, this, modelCmd[1]);
+				return;
+			}
 
 			// Check if busy
 			if (this.handler.isRunning(chatId)) {

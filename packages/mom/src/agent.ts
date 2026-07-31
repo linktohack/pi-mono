@@ -35,42 +35,57 @@ const modelRegistry = new ModelRegistry(modelRuntime);
 
 let selectedModel: Model<Api> = getModel("anthropic", "claude-sonnet-4-6");
 
-export function setModel(modelReference: string): void {
+export type ModelLookup =
+	| { ok: true; model: Model<Api> }
+	| { ok: false; reason: "not-found" }
+	| { ok: false; reason: "ambiguous"; candidates: Model<Api>[] };
+
+/**
+ * Resolve a model reference ("provider/id", "id", or a substring) against the registry.
+ * Non-fatal: callers decide how to report failure.
+ */
+export function resolveModel(modelReference: string): ModelLookup {
 	const allModels = modelRegistry.getAll();
+	const needle = modelReference.toLowerCase();
 
 	// Try exact provider/id match
 	const slashIndex = modelReference.indexOf("/");
 	if (slashIndex !== -1) {
-		const provider = modelReference.substring(0, slashIndex);
-		const modelId = modelReference.substring(slashIndex + 1);
-		const exact = allModels.find(
-			(m) => m.provider.toLowerCase() === provider.toLowerCase() && m.id.toLowerCase() === modelId.toLowerCase(),
-		);
-		if (exact) {
-			selectedModel = exact;
-			return;
-		}
+		const provider = modelReference.substring(0, slashIndex).toLowerCase();
+		const modelId = modelReference.substring(slashIndex + 1).toLowerCase();
+		const exact = allModels.find((m) => m.provider.toLowerCase() === provider && m.id.toLowerCase() === modelId);
+		if (exact) return { ok: true, model: exact };
 	}
 
 	// Try matching by id alone
-	const byId = allModels.find((m) => m.id.toLowerCase() === modelReference.toLowerCase());
-	if (byId) {
-		selectedModel = byId;
-		return;
-	}
+	const byId = allModels.find((m) => m.id.toLowerCase() === needle);
+	if (byId) return { ok: true, model: byId };
 
 	// Try partial match
 	const partial = allModels.filter(
-		(m) =>
-			m.id.toLowerCase().includes(modelReference.toLowerCase()) ||
-			m.name?.toLowerCase().includes(modelReference.toLowerCase()),
+		(m) => m.id.toLowerCase().includes(needle) || m.name?.toLowerCase().includes(needle),
 	);
-	if (partial.length === 1) {
-		selectedModel = partial[0];
+	if (partial.length === 1) return { ok: true, model: partial[0] };
+	if (partial.length > 1) return { ok: false, reason: "ambiguous", candidates: partial };
+
+	return { ok: false, reason: "not-found" };
+}
+
+export function setModel(modelReference: string): void {
+	const result = resolveModel(modelReference);
+	if (result.ok) {
+		selectedModel = result.model;
 		return;
 	}
 
-	console.error(`Model "${modelReference}" not found. Available models from registry (including models.json).`);
+	if (result.reason === "ambiguous") {
+		console.error(
+			`Model "${modelReference}" is ambiguous. Candidates:\n` +
+				result.candidates.map((m) => `  ${m.provider}/${m.id}`).join("\n"),
+		);
+	} else {
+		console.error(`Model "${modelReference}" not found. Available models from registry (including models.json).`);
+	}
 	process.exit(1);
 }
 
@@ -89,6 +104,10 @@ export interface AgentRunner {
 	): Promise<{ stopReason: string; errorMessage?: string }>;
 	abort(): void;
 	compact(): Promise<string>;
+	/** Current model as "provider/id". */
+	getModel(): string;
+	/** Switch the channel's model. Returns a status message to post back. */
+	setModel(modelReference: string): Promise<string>;
 }
 
 // The model runtime resolves credentials itself (API keys, OAuth, headers). This only
@@ -589,6 +608,21 @@ function createRunner(
 		log.logInfo(`[${channelId}] Loaded ${loadedSession.messages.length} messages from context.jsonl`);
 	}
 
+	// Restore the model this channel was last switched to. `session.setModel` records a
+	// model_change entry, so a channel keeps its model across restarts (until `new`).
+	if (loadedSession.model) {
+		const persisted = resolveModel(`${loadedSession.model.provider}/${loadedSession.model.modelId}`);
+		if (persisted.ok) {
+			agent.state.model = persisted.model;
+			log.logInfo(`[${channelId}] Restored model ${persisted.model.provider}/${persisted.model.id}`);
+		} else {
+			log.logWarning(
+				`[${channelId}] Persisted model not available, using default`,
+				`${loadedSession.model.provider}/${loadedSession.model.modelId}`,
+			);
+		}
+	}
+
 	const resourceLoader: ResourceLoader = {
 		getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
 		getSkills: () => ({ skills: [], diagnostics: [] }),
@@ -1019,7 +1053,7 @@ function createRunner(
 						lastAssistantMessage.usage.cacheRead +
 						lastAssistantMessage.usage.cacheWrite
 					: 0;
-				const contextWindow = selectedModel.contextWindow || 200000;
+				const contextWindow = session.model?.contextWindow || 200000;
 
 				const summary = log.logUsageSummary(runState.logCtx!, runState.totalUsage, contextTokens, contextWindow);
 				runState.queue.enqueue(() => ctx.respondInThread(summary), "usage summary");
@@ -1044,6 +1078,31 @@ function createRunner(
 				return `Compacted: ${result.tokensBefore} tokens before`;
 			} catch (err) {
 				return `Compaction failed: ${err instanceof Error ? err.message : String(err)}`;
+			}
+		},
+
+		getModel(): string {
+			const model = session.model;
+			return model ? `${model.provider}/${model.id}` : "(none)";
+		},
+
+		async setModel(modelReference: string): Promise<string> {
+			const result = resolveModel(modelReference);
+			if (!result.ok) {
+				if (result.reason === "ambiguous") {
+					const shown = result.candidates.slice(0, 8).map((m) => `${m.provider}/${m.id}`);
+					const more = result.candidates.length - shown.length;
+					return `Model "${modelReference}" is ambiguous:\n${shown.join("\n")}${more > 0 ? `\n...and ${more} more` : ""}`;
+				}
+				return `Model "${modelReference}" not found`;
+			}
+
+			try {
+				// Records a model_change entry, so the choice survives a restart.
+				await session.setModel(result.model);
+				return `Model set to ${result.model.provider}/${result.model.id}`;
+			} catch (err) {
+				return `Failed to set model: ${err instanceof Error ? err.message : String(err)}`;
 			}
 		},
 	};

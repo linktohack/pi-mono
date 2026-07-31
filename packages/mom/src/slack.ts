@@ -272,6 +272,14 @@ export class SlackBot implements ChatBot {
 				ack();
 				return;
 			}
+			// "model" reports the current model, "model <ref>" switches. A model reference never
+			// contains spaces, so "model this data for me" stays a normal message.
+			const modelCmd = cmd.match(/^model(?:\s+(\S+))?$/);
+			if (modelCmd) {
+				this.handler.handleModel(e.channel, this, modelCmd[1]);
+				ack();
+				return;
+			}
 
 			// SYNC: Check if busy
 			if (this.handler.isRunning(e.channel)) {
@@ -361,6 +369,12 @@ export class SlackBot implements ChatBot {
 				}
 				if (dmCmd === "new") {
 					this.handler.handleNew(e.channel, this);
+					ack();
+					return;
+				}
+				const dmModelCmd = dmCmd.match(/^model(?:\s+(\S+))?$/);
+				if (dmModelCmd) {
+					this.handler.handleModel(e.channel, this, dmModelCmd[1]);
 					ack();
 					return;
 				}
