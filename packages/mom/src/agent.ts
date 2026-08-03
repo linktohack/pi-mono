@@ -13,7 +13,7 @@ import {
 	SessionManager,
 	type Skill,
 } from "@earendil-works/pi-coding-agent";
-import { existsSync, readFileSync } from "fs";
+import { existsSync, readFileSync, renameSync } from "fs";
 import { mkdir, writeFile } from "fs/promises";
 import { homedir } from "os";
 import { join } from "path";
@@ -549,6 +549,35 @@ export function getOrCreateRunner(
 }
 
 /**
+ * Open a channel's session, quarantining a context.jsonl that pi can no longer parse.
+ *
+ * A truncated or header-less file makes SessionManager.open throw, which would leave the
+ * channel permanently broken - every message dies in the queue and commands take the
+ * process down with them. Move the file aside rather than deleting it, so the history is
+ * still recoverable by hand, and start a fresh session so the channel keeps working.
+ */
+function openSession(contextFile: string, channelDir: string, channelId: string): SessionManager {
+	try {
+		return SessionManager.open(contextFile, channelDir);
+	} catch (err) {
+		const quarantined = `${contextFile}.corrupt-${Date.now()}`;
+		try {
+			renameSync(contextFile, quarantined);
+		} catch (renameErr) {
+			// Can't move it aside, so a fresh session would hit the same file. Let the
+			// original error surface instead of silently looping.
+			log.logWarning(`[${channelId}] Failed to quarantine unreadable session`, String(renameErr));
+			throw err;
+		}
+		log.logWarning(
+			`[${channelId}] Unreadable session file, starting fresh`,
+			`${err instanceof Error ? err.message : String(err)} (moved to ${quarantined})`,
+		);
+		return SessionManager.open(contextFile, channelDir);
+	}
+}
+
+/**
  * Create a new AgentRunner for a channel.
  * Sets up the session and subscribes to events once.
  */
@@ -583,7 +612,7 @@ function createRunner(
 	// Create session manager and settings manager
 	// Use a fixed context.jsonl file per channel (not timestamped like coding-agent)
 	const contextFile = join(channelDir, "context.jsonl");
-	const sessionManager = SessionManager.open(contextFile, channelDir);
+	const sessionManager = openSession(contextFile, channelDir, channelId);
 	const settingsManager = createMomSettingsManager(join(channelDir, ".."));
 
 	// Use module-level modelRuntime/modelRegistry (shared across channels)

@@ -388,18 +388,27 @@ const handler: MomHandler = {
 		await bot.postMessage(channelId, "_New session started_");
 	},
 
+	// Commands are dispatched fire-and-forget by the platform adapters, so anything that
+	// escapes here becomes an unhandled rejection and takes the process down. getState()
+	// builds the runner on first use, which touches the session file and can throw.
 	async handleModel(channelId: string, bot: ChatBot, modelReference?: string): Promise<void> {
-		const state = getState(channelId);
-		if (!modelReference) {
-			await bot.postMessage(channelId, `_Model: ${state.runner.getModel()}_`);
-			return;
+		try {
+			const state = getState(channelId);
+			if (!modelReference) {
+				await bot.postMessage(channelId, `_Model: ${state.runner.getModel()}_`);
+				return;
+			}
+			if (state.running) {
+				await bot.postMessage(channelId, "_Can't switch model while running. Stop first._");
+				return;
+			}
+			const result = await state.runner.setModel(modelReference);
+			await bot.postMessage(channelId, `_${result}_`);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			log.logWarning(`[${channelId}] model command failed`, msg);
+			await bot.postMessage(channelId, `_Model command failed: ${msg}_`).catch(() => {});
 		}
-		if (state.running) {
-			await bot.postMessage(channelId, "_Can't switch model while running. Stop first._");
-			return;
-		}
-		const result = await state.runner.setModel(modelReference);
-		await bot.postMessage(channelId, `_${result}_`);
 	},
 
 	async handleEvent(event: ChatEvent, bot: ChatBot, isEvent?: boolean): Promise<void> {
